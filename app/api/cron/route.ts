@@ -90,9 +90,9 @@ export async function GET(req: NextRequest) {
             sent++;
         }
 
-        // Нагадування в момент дедлайну (або вже минув — до 5 хв після)
-        const fiveMinAfter = new Date(dl.getTime() + 5 * 60 * 1000);
-        if (!task.remindedDue && dl <= now && now <= fiveMinAfter) {
+        // Нагадування в момент дедлайну (або вже минув — до 30 хв після)
+        const thirtyMinAfter = new Date(dl.getTime() + 30 * 60 * 1000);
+        if (!task.remindedDue && dl <= now && now <= thirtyMinAfter) {
             await sendMessage(
                 task.chatId,
                 `🔔 <b>Дедлайн!</b>\n${icon} ${task.text}`
