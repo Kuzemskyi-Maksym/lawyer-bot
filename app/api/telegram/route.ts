@@ -278,18 +278,18 @@ export async function POST(req: NextRequest) {
         const chatId = cq.message?.chat?.id;
         const data = cq.data!;
 
-        void tg("answerCallbackQuery", { callback_query_id: cq.id });
+        await tg("answerCallbackQuery", { callback_query_id: cq.id });
         if (!chatId) return Response.json({ ok: true });
 
         if (data === "MENU") {
             pendingByChat.delete(chatId);
-            void tg("sendMessage", { chat_id: chatId, text: "✅ Меню:", reply_markup: mainMenu() });
+            await tg("sendMessage", { chat_id: chatId, text: "✅ Меню:", reply_markup: mainMenu() });
             return Response.json({ ok: true });
         }
 
         if (data === "ADD") {
             pendingByChat.set(chatId, { state: "add_text", draft: {} });
-            void tg("sendMessage", { chat_id: chatId, text: "Напиши текст справи ✍️", reply_markup: backMenu() });
+            await tg("sendMessage", { chat_id: chatId, text: "Напиши текст справи ✍️", reply_markup: backMenu() });
             return Response.json({ ok: true });
         }
 
@@ -300,7 +300,7 @@ export async function POST(req: NextRequest) {
                 p.draft!.type = type;
                 p.state = "add_priority";
                 pendingByChat.set(chatId, p);
-                void tg("sendMessage", { chat_id: chatId, text: "Рівень важливості:", reply_markup: priorityMenu() });
+                await tg("sendMessage", { chat_id: chatId, text: "Рівень важливості:", reply_markup: priorityMenu() });
             }
             return Response.json({ ok: true });
         }
@@ -312,7 +312,7 @@ export async function POST(req: NextRequest) {
                 p.draft!.priority = priority;
                 p.state = "add_deadline";
                 pendingByChat.set(chatId, p);
-                void tg("sendMessage", {
+                await tg("sendMessage", {
                     chat_id: chatId,
                     text: "Вкажи дедлайн ⏰\n\nФормат: <b>21.06 14:30</b> або <b>завтра 09:00</b> або <b>сьогодні 18:00</b>",
                     parse_mode: "HTML",
@@ -334,7 +334,7 @@ export async function POST(req: NextRequest) {
                     createdAt: new Date(),
                 });
                 pendingByChat.delete(chatId);
-                void tg("sendMessage", {
+                await tg("sendMessage", {
                     chat_id: chatId,
                     text: `➕ Справу додано без дедлайну!\n${PRIORITY_ICON[p.draft.priority as Priority]} ${TYPE_ICON[p.draft.type as TaskType]} ${p.draft.text}`,
                     reply_markup: mainMenu(),
@@ -346,7 +346,7 @@ export async function POST(req: NextRequest) {
         if (data === "LIST") {
             pendingByChat.delete(chatId);
             const tasks = await getTasks(chatId);
-            void tg("sendMessage", {
+            await tg("sendMessage", {
                 chat_id: chatId,
                 text: `📋 Активні справи:\n\n${formatTasks(tasks)}`,
                 reply_markup: mainMenu(),
@@ -357,7 +357,7 @@ export async function POST(req: NextRequest) {
         if (data === "DONE") {
             const tasks = await getTasks(chatId);
             pendingByChat.set(chatId, { state: "done_pick" });
-            void tg("sendMessage", {
+            await tg("sendMessage", {
                 chat_id: chatId,
                 text: `Номер виконаної справи:\n\n${formatTasks(tasks)}`,
                 reply_markup: backMenu(),
@@ -368,7 +368,7 @@ export async function POST(req: NextRequest) {
         if (data === "DEL") {
             const tasks = await getTasks(chatId);
             pendingByChat.set(chatId, { state: "del_pick" });
-            void tg("sendMessage", {
+            await tg("sendMessage", {
                 chat_id: chatId,
                 text: `Номер справи для видалення:\n\n${formatTasks(tasks)}`,
                 reply_markup: backMenu(),
@@ -376,7 +376,7 @@ export async function POST(req: NextRequest) {
             return Response.json({ ok: true });
         }
 
-        void tg("sendMessage", { chat_id: chatId, text: "Невідома дія. Спробуй /start", reply_markup: mainMenu() });
+        await tg("sendMessage", { chat_id: chatId, text: "Невідома дія. Спробуй /start", reply_markup: mainMenu() });
         return Response.json({ ok: true });
     }
 
@@ -387,13 +387,13 @@ export async function POST(req: NextRequest) {
 
     if (text === "/start" || text === "/menu") {
         pendingByChat.delete(chatId);
-        void tg("sendMessage", { chat_id: chatId, text: "👋 Органайзер юриста онлайн. Обирай дію:", reply_markup: mainMenu() });
+        await tg("sendMessage", { chat_id: chatId, text: "👋 Органайзер юриста онлайн. Обирай дію:", reply_markup: mainMenu() });
         return Response.json({ ok: true });
     }
 
     if (text.toLowerCase() === "назад") {
         pendingByChat.delete(chatId);
-        void tg("sendMessage", { chat_id: chatId, text: "✅ Меню:", reply_markup: mainMenu() });
+        await tg("sendMessage", { chat_id: chatId, text: "✅ Меню:", reply_markup: mainMenu() });
         return Response.json({ ok: true });
     }
 
@@ -403,14 +403,14 @@ export async function POST(req: NextRequest) {
         pending.draft!.text = text;
         pending.state = "add_type";
         pendingByChat.set(chatId, pending);
-        void tg("sendMessage", { chat_id: chatId, text: "Тип справи:", reply_markup: typeMenu() });
+        await tg("sendMessage", { chat_id: chatId, text: "Тип справи:", reply_markup: typeMenu() });
         return Response.json({ ok: true });
     }
 
     if (pending?.state === "add_deadline") {
         const deadline = parseDeadline(text);
         if (!deadline) {
-            void tg("sendMessage", {
+            await tg("sendMessage", {
                 chat_id: chatId,
                 text: "Не можу розпізнати дату 🤔\n\nСпробуй: <b>21.06 14:30</b> або <b>завтра 09:00</b>",
                 parse_mode: "HTML",
@@ -438,7 +438,7 @@ export async function POST(req: NextRequest) {
                 p.draft.type === "суд" ? "\n⚠️ Судова справа — контроль строків критичний." :
                     p.draft.type === "платіж" ? "\n⚠️ Перевір строк оплати." : "";
 
-            void tg("sendMessage", {
+            await tg("sendMessage", {
                 chat_id: chatId,
                 text: `➕ Справу додано!\n${PRIORITY_ICON[p.draft.priority as Priority]} ${TYPE_ICON[p.draft.type as TaskType]} ${p.draft.text}\n⏰ Дедлайн: ${formatDeadline(deadline)}${hint}`,
                 reply_markup: mainMenu(),
@@ -450,7 +450,7 @@ export async function POST(req: NextRequest) {
     if (pending?.state === "done_pick") {
         const task = await markDone(chatId, Number(text) - 1);
         pendingByChat.delete(chatId);
-        void tg("sendMessage", {
+        await tg("sendMessage", {
             chat_id: chatId,
             text: task ? `✅ Виконано: ${task.text}` : "Не знайшов таку справу.",
             reply_markup: mainMenu(),
@@ -461,7 +461,7 @@ export async function POST(req: NextRequest) {
     if (pending?.state === "del_pick") {
         const task = await deleteTask(chatId, Number(text) - 1);
         pendingByChat.delete(chatId);
-        void tg("sendMessage", {
+        await tg("sendMessage", {
             chat_id: chatId,
             text: task ? `🗑 Видалено: ${task.text}` : "Не знайшов таку справу.",
             reply_markup: mainMenu(),
@@ -469,6 +469,6 @@ export async function POST(req: NextRequest) {
         return Response.json({ ok: true });
     }
 
-    void tg("sendMessage", { chat_id: chatId, text: "Обирай дію кнопками 👇", reply_markup: mainMenu() });
+    await tg("sendMessage", { chat_id: chatId, text: "Обирай дію кнопками 👇", reply_markup: mainMenu() });
     return Response.json({ ok: true });
 }
