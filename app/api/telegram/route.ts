@@ -7,6 +7,8 @@ const MONGO_URI = process.env.MONGO_URI!;
 
 export const runtime = "nodejs";
 
+// ─── Типи ────────────────────────────────────────────────────────────────────
+
 type TgUpdate = {
     message?: { chat?: { id: number }; text?: string };
     callback_query?: {
@@ -26,13 +28,23 @@ type Task = {
     done: boolean;
     type: TaskType;
     priority: Priority;
+    deadline?: Date;
+    reminded10?: boolean; // чи надіслали нагадування за 10 хв
+    remindedDue?: boolean; // чи надіслали нагадування в момент дедлайну
     createdAt: Date;
 };
 
-type PendingState = "add_text" | "add_type" | "add_priority" | "done_pick" | "del_pick";
+type PendingState =
+    | "add_text"
+    | "add_type"
+    | "add_priority"
+    | "add_deadline"
+    | "done_pick"
+    | "del_pick";
+
 type Pending = { state: PendingState; draft?: Partial<Task> };
 
-// ── MongoDB singleton (Vercel-safe) ──────────────────────────────────────────
+// ─── MongoDB singleton ────────────────────────────────────────────────────────
 
 declare global {
     var _mongoClient: MongoClient | undefined;
@@ -56,7 +68,11 @@ async function getDb() {
 
 async function getTasks(chatId: number): Promise<Task[]> {
     const db = await getDb();
-    return db.collection<Task>("tasks").find({ chatId, done: false }).sort({ createdAt: 1 }).toArray();
+    return db
+        .collection<Task>("tasks")
+        .find({ chatId, done: false })
+        .sort({ createdAt: 1 })
+        .toArray();
 }
 
 async function addTask(task: Omit<Task, "_id">): Promise<void> {
@@ -69,7 +85,9 @@ async function markDone(chatId: number, index: number): Promise<Task | null> {
     if (index < 0 || index >= tasks.length) return null;
     const task = tasks[index];
     const db = await getDb();
-    await db.collection<Task>("tasks").updateOne({ _id: task._id }, { $set: { done: true } });
+    await db
+        .collection<Task>("tasks")
+        .updateOne({ _id: task._id }, { $set: { done: true } });
     return task;
 }
 
@@ -82,41 +100,107 @@ async function deleteTask(chatId: number, index: number): Promise<Task | null> {
     return task;
 }
 
-// ── In-memory pending ────────────────────────────────────────────────────────
+// ─── Парсинг дати "21.06 14:30" або "21.06.2025 14:30" ──────────────────────
+
+function parseDeadline(input: string): Date | null {
+    // формати: "21.06 14:30" / "21.06.2025 14:30" / "завтра 14:30" / "сьогодні 14:30"
+    const now = new Date();
+    const lower = input.trim().toLowerCase();
+
+    let day: number, month: number, year: number, hours: number, minutes: number;
+
+    // "сьогодні 14:30" / "завтра 14:30"
+    const relMatch = lower.match(/^(сьогодні|завтра)\s+(\d{1,2}):(\d{2})$/);
+    if (relMatch) {
+        const base = new Date(now);
+        if (relMatch[1] === "завтра") base.setDate(base.getDate() + 1);
+        day = base.getDate();
+        month = base.getMonth() + 1;
+        year = base.getFullYear();
+        hours = parseInt(relMatch[2]);
+        minutes = parseInt(relMatch[3]);
+    } else {
+        // "21.06 14:30" або "21.06.2025 14:30"
+        const m = lower.match(/^(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?\s+(\d{1,2}):(\d{2})$/);
+        if (!m) return null;
+        day = parseInt(m[1]);
+        month = parseInt(m[2]);
+        year = m[3] ? parseInt(m[3]) : now.getFullYear();
+        hours = parseInt(m[4]);
+        minutes = parseInt(m[5]);
+    }
+
+    if (
+        month < 1 || month > 12 ||
+        day < 1 || day > 31 ||
+        hours < 0 || hours > 23 ||
+        minutes < 0 || minutes > 59
+    ) return null;
+
+    const date = new Date(year, month - 1, day, hours, minutes, 0, 0);
+    if (isNaN(date.getTime())) return null;
+    return date;
+}
+
+function formatDeadline(d: Date): string {
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// ─── In-memory pending ───────────────────────────────────────────────────────
 
 const pendingByChat = new Map<number, Pending>();
 
-// ── Telegram ─────────────────────────────────────────────────────────────────
+// ─── Telegram ────────────────────────────────────────────────────────────────
 
 async function tg(method: string, payload: object) {
-    const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/${method}`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
-    });
+    const res = await fetch(
+        `https://api.telegram.org/bot${BOT_TOKEN}/${method}`,
+        {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(payload),
+        }
+    );
     if (!res.ok) console.error("TG error", method, await res.text());
 }
+
+// ─── Клавіатури ──────────────────────────────────────────────────────────────
 
 function mainMenu() {
     return {
         inline_keyboard: [
             [{ text: "➕ Додати справу", callback_data: "ADD" }],
             [{ text: "📋 Мої справи", callback_data: "LIST" }],
-            [{ text: "✅ Виконано", callback_data: "DONE" }, { text: "🗑 Видалити", callback_data: "DEL" }],
+            [
+                { text: "✅ Виконано", callback_data: "DONE" },
+                { text: "🗑 Видалити", callback_data: "DEL" },
+            ],
         ],
     };
 }
 
 function backMenu() {
-    return { inline_keyboard: [[{ text: "⬅️ Назад", callback_data: "MENU" }]] };
+    return {
+        inline_keyboard: [[{ text: "⬅️ Назад", callback_data: "MENU" }]],
+    };
 }
 
 function typeMenu() {
     return {
         inline_keyboard: [
-            [{ text: "📄 Договір", callback_data: "TYPE_договір" }, { text: "⚖️ Суд", callback_data: "TYPE_суд" }],
-            [{ text: "✉️ Лист", callback_data: "TYPE_лист" }, { text: "💳 Платіж", callback_data: "TYPE_платіж" }],
-            [{ text: "🤝 Зустріч", callback_data: "TYPE_зустріч" }, { text: "📌 Інше", callback_data: "TYPE_інше" }],
+            [
+                { text: "📄 Договір", callback_data: "TYPE_договір" },
+                { text: "⚖️ Суд", callback_data: "TYPE_суд" },
+            ],
+            [
+                { text: "✉️ Лист", callback_data: "TYPE_лист" },
+                { text: "💳 Платіж", callback_data: "TYPE_платіж" },
+            ],
+            [
+                { text: "🤝 Зустріч", callback_data: "TYPE_зустріч" },
+                { text: "📌 Інше", callback_data: "TYPE_інше" },
+            ],
             [{ text: "⬅️ Назад", callback_data: "MENU" }],
         ],
     };
@@ -135,26 +219,60 @@ function priorityMenu() {
     };
 }
 
-const PRIORITY_ICON: Record<Priority, string> = { звичайна: "🟢", важлива: "🟡", критична: "🔴" };
-const TYPE_ICON: Record<TaskType, string> = { договір: "📄", суд: "⚖️", лист: "✉️", платіж: "💳", зустріч: "🤝", інше: "📌" };
+function deadlineMenu() {
+    return {
+        inline_keyboard: [
+            [{ text: "⏭ Без дедлайну", callback_data: "DEADLINE_SKIP" }],
+            [{ text: "⬅️ Назад", callback_data: "MENU" }],
+        ],
+    };
+}
+
+// ─── Форматування ─────────────────────────────────────────────────────────────
+
+const PRIORITY_ICON: Record<Priority, string> = {
+    звичайна: "🟢",
+    важлива: "🟡",
+    критична: "🔴",
+};
+
+const TYPE_ICON: Record<TaskType, string> = {
+    договір: "📄",
+    суд: "⚖️",
+    лист: "✉️",
+    платіж: "💳",
+    зустріч: "🤝",
+    інше: "📌",
+};
 
 function formatTasks(tasks: Task[]): string {
     if (!tasks.length) return "Справ немає 🙌";
-    return tasks.map((t, i) => `${i + 1}. ${PRIORITY_ICON[t.priority]} ${TYPE_ICON[t.type]} ${t.text}`).join("\n");
+    return tasks
+        .map((t, i) => {
+            const dl = t.deadline
+                ? `\n   ⏰ ${formatDeadline(t.deadline)}`
+                : "";
+            return `${i + 1}. ${PRIORITY_ICON[t.priority]} ${TYPE_ICON[t.type]} ${t.text}${dl}`;
+        })
+        .join("\n");
 }
 
-// ── Головний обробник ─────────────────────────────────────────────────────────
+// ─── Головний обробник ────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
-    if (!BOT_TOKEN) return Response.json({ error: "BOT_TOKEN missing" }, { status: 500 });
+    if (!BOT_TOKEN)
+        return Response.json({ error: "BOT_TOKEN missing" }, { status: 500 });
 
     if (WEBHOOK_SECRET) {
-        const got = req.headers.get("x-telegram-bot-api-secret-token") || "";
-        if (got !== WEBHOOK_SECRET) return Response.json({ error: "Bad secret" }, { status: 401 });
+        const got =
+            req.headers.get("x-telegram-bot-api-secret-token") || "";
+        if (got !== WEBHOOK_SECRET)
+            return Response.json({ error: "Bad secret" }, { status: 401 });
     }
 
     const update = (await req.json()) as TgUpdate;
 
+    // ── Callback ────────────────────────────────────────────────────────────
     if (update.callback_query?.data) {
         const cq = update.callback_query;
         const chatId = cq.message?.chat?.id;
@@ -190,14 +308,35 @@ export async function POST(req: NextRequest) {
         if (data.startsWith("PRI_")) {
             const priority = data.replace("PRI_", "") as Priority;
             const p = pendingByChat.get(chatId);
-            if (p?.state === "add_priority" && p.draft?.text && p.draft?.type) {
-                await addTask({ chatId, text: p.draft.text, type: p.draft.type, priority, done: false, createdAt: new Date() });
-                pendingByChat.delete(chatId);
-                const hint = p.draft.type === "суд" ? "\n⚠️ Судова справа — контроль строків критичний."
-                    : p.draft.type === "платіж" ? "\n⚠️ Перевір строк оплати." : "";
+            if (p?.state === "add_priority") {
+                p.draft!.priority = priority;
+                p.state = "add_deadline";
+                pendingByChat.set(chatId, p);
                 void tg("sendMessage", {
                     chat_id: chatId,
-                    text: `➕ Справу додано!\n${PRIORITY_ICON[priority]} ${TYPE_ICON[p.draft.type]} ${p.draft.text}${hint}`,
+                    text: "Вкажи дедлайн ⏰\n\nФормат: <b>21.06 14:30</b> або <b>завтра 09:00</b> або <b>сьогодні 18:00</b>",
+                    parse_mode: "HTML",
+                    reply_markup: deadlineMenu(),
+                });
+            }
+            return Response.json({ ok: true });
+        }
+
+        if (data === "DEADLINE_SKIP") {
+            const p = pendingByChat.get(chatId);
+            if (p?.state === "add_deadline" && p.draft?.text && p.draft?.type && p.draft?.priority) {
+                await addTask({
+                    chatId,
+                    text: p.draft.text,
+                    type: p.draft.type as TaskType,
+                    priority: p.draft.priority as Priority,
+                    done: false,
+                    createdAt: new Date(),
+                });
+                pendingByChat.delete(chatId);
+                void tg("sendMessage", {
+                    chat_id: chatId,
+                    text: `➕ Справу додано без дедлайну!\n${PRIORITY_ICON[p.draft.priority as Priority]} ${TYPE_ICON[p.draft.type as TaskType]} ${p.draft.text}`,
                     reply_markup: mainMenu(),
                 });
             }
@@ -207,21 +346,33 @@ export async function POST(req: NextRequest) {
         if (data === "LIST") {
             pendingByChat.delete(chatId);
             const tasks = await getTasks(chatId);
-            void tg("sendMessage", { chat_id: chatId, text: `📋 Активні справи:\n\n${formatTasks(tasks)}`, reply_markup: mainMenu() });
+            void tg("sendMessage", {
+                chat_id: chatId,
+                text: `📋 Активні справи:\n\n${formatTasks(tasks)}`,
+                reply_markup: mainMenu(),
+            });
             return Response.json({ ok: true });
         }
 
         if (data === "DONE") {
             const tasks = await getTasks(chatId);
             pendingByChat.set(chatId, { state: "done_pick" });
-            void tg("sendMessage", { chat_id: chatId, text: `Номер виконаної справи:\n\n${formatTasks(tasks)}`, reply_markup: backMenu() });
+            void tg("sendMessage", {
+                chat_id: chatId,
+                text: `Номер виконаної справи:\n\n${formatTasks(tasks)}`,
+                reply_markup: backMenu(),
+            });
             return Response.json({ ok: true });
         }
 
         if (data === "DEL") {
             const tasks = await getTasks(chatId);
             pendingByChat.set(chatId, { state: "del_pick" });
-            void tg("sendMessage", { chat_id: chatId, text: `Номер справи для видалення:\n\n${formatTasks(tasks)}`, reply_markup: backMenu() });
+            void tg("sendMessage", {
+                chat_id: chatId,
+                text: `Номер справи для видалення:\n\n${formatTasks(tasks)}`,
+                reply_markup: backMenu(),
+            });
             return Response.json({ ok: true });
         }
 
@@ -229,6 +380,7 @@ export async function POST(req: NextRequest) {
         return Response.json({ ok: true });
     }
 
+    // ── Message ──────────────────────────────────────────────────────────────
     const chatId = update.message?.chat?.id;
     const text = (update.message?.text || "").trim();
     if (!chatId || !text) return Response.json({ ok: true });
@@ -255,17 +407,65 @@ export async function POST(req: NextRequest) {
         return Response.json({ ok: true });
     }
 
+    if (pending?.state === "add_deadline") {
+        const deadline = parseDeadline(text);
+        if (!deadline) {
+            void tg("sendMessage", {
+                chat_id: chatId,
+                text: "Не можу розпізнати дату 🤔\n\nСпробуй: <b>21.06 14:30</b> або <b>завтра 09:00</b>",
+                parse_mode: "HTML",
+                reply_markup: deadlineMenu(),
+            });
+            return Response.json({ ok: true });
+        }
+
+        const p = pending;
+        if (p.draft?.text && p.draft?.type && p.draft?.priority) {
+            await addTask({
+                chatId,
+                text: p.draft.text,
+                type: p.draft.type as TaskType,
+                priority: p.draft.priority as Priority,
+                deadline,
+                reminded10: false,
+                remindedDue: false,
+                done: false,
+                createdAt: new Date(),
+            });
+            pendingByChat.delete(chatId);
+
+            const hint =
+                p.draft.type === "суд" ? "\n⚠️ Судова справа — контроль строків критичний." :
+                    p.draft.type === "платіж" ? "\n⚠️ Перевір строк оплати." : "";
+
+            void tg("sendMessage", {
+                chat_id: chatId,
+                text: `➕ Справу додано!\n${PRIORITY_ICON[p.draft.priority as Priority]} ${TYPE_ICON[p.draft.type as TaskType]} ${p.draft.text}\n⏰ Дедлайн: ${formatDeadline(deadline)}${hint}`,
+                reply_markup: mainMenu(),
+            });
+        }
+        return Response.json({ ok: true });
+    }
+
     if (pending?.state === "done_pick") {
         const task = await markDone(chatId, Number(text) - 1);
         pendingByChat.delete(chatId);
-        void tg("sendMessage", { chat_id: chatId, text: task ? `✅ Виконано: ${task.text}` : "Не знайшов таку справу.", reply_markup: mainMenu() });
+        void tg("sendMessage", {
+            chat_id: chatId,
+            text: task ? `✅ Виконано: ${task.text}` : "Не знайшов таку справу.",
+            reply_markup: mainMenu(),
+        });
         return Response.json({ ok: true });
     }
 
     if (pending?.state === "del_pick") {
         const task = await deleteTask(chatId, Number(text) - 1);
         pendingByChat.delete(chatId);
-        void tg("sendMessage", { chat_id: chatId, text: task ? `🗑 Видалено: ${task.text}` : "Не знайшов таку справу.", reply_markup: mainMenu() });
+        void tg("sendMessage", {
+            chat_id: chatId,
+            text: task ? `🗑 Видалено: ${task.text}` : "Не знайшов таку справу.",
+            reply_markup: mainMenu(),
+        });
         return Response.json({ ok: true });
     }
 

@@ -1,0 +1,16 @@
+name: Reminder Cron
+
+on:
+  schedule:
+    - cron: "* * * * *"  # кожну хвилину
+  workflow_dispatch:      # можна запустити вручну для тесту
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call cron endpoint
+        run: |
+          curl -s -X GET \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.VERCEL_URL }}/api/cron"
