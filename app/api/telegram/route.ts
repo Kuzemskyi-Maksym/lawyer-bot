@@ -102,49 +102,54 @@ async function deleteTask(chatId: number, index: number): Promise<Task | null> {
 
 // ─── Парсинг дати "21.06 14:30" або "21.06.2025 14:30" ──────────────────────
 
+// Заміни стару функцію parseDeadline на цю
+
+const TZ_OFFSET_MS = 3 * 60 * 60 * 1000; // UTC+2
+
 function parseDeadline(input: string): Date | null {
-    // формати: "21.06 14:30" / "21.06.2025 14:30" / "завтра 14:30" / "сьогодні 14:30"
-    const now = new Date();
     const lower = input.trim().toLowerCase();
+
+    const nowUTC = Date.now();
+    const nowKyiv = new Date(nowUTC + TZ_OFFSET_MS);
 
     let day: number, month: number, year: number, hours: number, minutes: number;
 
-    // "сьогодні 14:30" / "завтра 14:30"
     const relMatch = lower.match(/^(сьогодні|завтра)\s+(\d{1,2}):(\d{2})$/);
     if (relMatch) {
-        const base = new Date(now);
-        if (relMatch[1] === "завтра") base.setDate(base.getDate() + 1);
-        day = base.getDate();
-        month = base.getMonth() + 1;
-        year = base.getFullYear();
+        const base = new Date(nowKyiv);
+        if (relMatch[1] === "завтра") base.setUTCDate(base.getUTCDate() + 1);
+        day = base.getUTCDate();
+        month = base.getUTCMonth() + 1;
+        year = base.getUTCFullYear();
         hours = parseInt(relMatch[2]);
         minutes = parseInt(relMatch[3]);
     } else {
-        // "21.06 14:30" або "21.06.2025 14:30"
         const m = lower.match(/^(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?\s+(\d{1,2}):(\d{2})$/);
         if (!m) return null;
         day = parseInt(m[1]);
         month = parseInt(m[2]);
-        year = m[3] ? parseInt(m[3]) : now.getFullYear();
+        year = m[3] ? parseInt(m[3]) : nowKyiv.getUTCFullYear();
         hours = parseInt(m[4]);
         minutes = parseInt(m[5]);
     }
 
-    if (
-        month < 1 || month > 12 ||
-        day < 1 || day > 31 ||
-        hours < 0 || hours > 23 ||
-        minutes < 0 || minutes > 59
-    ) return null;
+    if (month < 1 || month > 12 || day < 1 || day > 31 ||
+        hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
 
-    const date = new Date(year, month - 1, day, hours, minutes, 0, 0);
+    // Київський час → UTC (віднімаємо +2год)
+    const kyivMs = Date.UTC(year, month - 1, day, hours, minutes, 0);
+    const utcMs = kyivMs - TZ_OFFSET_MS;
+    const date = new Date(utcMs);
+
     if (isNaN(date.getTime())) return null;
     return date;
 }
 
+// Також заміни formatDeadline
 function formatDeadline(d: Date): string {
     const pad = (n: number) => String(n).padStart(2, "0");
-    return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    const kyiv = new Date(d.getTime() + TZ_OFFSET_MS);
+    return `${pad(kyiv.getUTCDate())}.${pad(kyiv.getUTCMonth() + 1)}.${kyiv.getUTCFullYear()} ${pad(kyiv.getUTCHours())}:${pad(kyiv.getUTCMinutes())}`;
 }
 
 // ─── In-memory pending ───────────────────────────────────────────────────────
