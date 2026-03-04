@@ -104,7 +104,7 @@ async function deleteTask(chatId: number, index: number): Promise<Task | null> {
 
 // Заміни стару функцію parseDeadline на цю
 
-const TZ_OFFSET_MS = 3 * 60 * 60 * 1000; // UTC+2
+const TZ_OFFSET_MS = 3 * 60 * 60 * 1000; // UTC+3
 
 function parseDeadline(input: string): Date | null {
     const lower = input.trim().toLowerCase();
